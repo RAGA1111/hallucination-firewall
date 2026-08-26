@@ -1,0 +1,14 @@
+requests
+httpx
+transformers
+sentence-transformers
+faiss-cpu
+datasets
+torch
+fastapi
+uvicorn
+numpy
+python-dotenv
+wikipedia
+pypdf
+streamlit

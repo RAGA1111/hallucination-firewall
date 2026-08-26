@@ -1,0 +1,48 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases and indexes
+data/kb.index
+data/kb_passages.json
+data/*.db
+data/*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Streamlit configurations and local state
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Local experiments
+scratch/
+test.py
+test2.py
+core/test.py
+eval/results.json
+eval/tracking.jsonl
