@@ -1,196 +1,225 @@
 """
-LLM client for local Ollama inference.
+LLM client for Groq cloud inference.
 
 Public API:
     call_llm(prompt, ...)       -> str
-    call_llm_async(prompt, ...) -> str   (coroutine)
+    call_llm_async(prompt, ...) -> str (coroutine)
     is_ollama_running()         -> bool
+
+The is_ollama_running name is intentionally preserved because existing
+callers use it as a provider health gate.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 
-import httpx
-import requests
+from dotenv import load_dotenv
+from groq import Groq, AsyncGroq
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["call_llm", "call_llm_async", "is_ollama_running"]
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
-OLLAMA_BASE_URL: str = "http://localhost:11434"
-OLLAMA_URL: str = f"{OLLAMA_BASE_URL}/api/generate"
-DEFAULT_MODEL: str = "llama3.2:1b"
-
-# Seconds to wait between retries
-_SLEEP_EMPTY: float = 2.0    # empty response from model
-_SLEEP_TIMEOUT: float = 3.0  # request timed out
+_SLEEP_BASE = 1.0
+_DEFAULT_TIMEOUT = 30.0
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _build_payload(prompt: str, model: str, temperature: float) -> dict:
-    return {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": temperature},
-    }
+def _get_api_key() -> str:
+    return os.getenv("GROQ_API_KEY", "").strip()
 
 
-# ── Sync client ────────────────────────────────────────────────────────────────
+def _get_model(model: str | None) -> str:
+    return model or os.getenv("GROQ_MODEL", DEFAULT_MODEL)
+
 
 def call_llm(
     prompt: str,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.0,
-    max_retries: int = 3,
-    timeout: float = 120.0,
+    max_retries: int = 2,
+    timeout: float = _DEFAULT_TIMEOUT,
 ) -> str:
     """
-    Send a prompt to a local Ollama model and return the response.
+    Send a prompt to Groq and return the response.
 
-    Returns an empty string on failure — never raises.
+    Returns an empty string on failure rather than raising.
     """
-    payload = _build_payload(prompt, model, temperature)
 
-    for attempt in range(1, max_retries + 1):
+    api_key = _get_api_key()
+
+    if not api_key:
+        logger.error("call_llm | GROQ_API_KEY is not configured")
+        return ""
+
+    selected_model = _get_model(model)
+
+    client = Groq(
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+    for attempt in range(max_retries + 1):
         try:
-            logger.debug("call_llm | model=%s attempt=%d temp=%.1f", model, attempt, temperature)
+            logger.debug(
+                "call_llm | provider=groq model=%s attempt=%d temp=%.1f",
+                selected_model,
+                attempt + 1,
+                temperature,
+            )
 
-            response = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
-            response.raise_for_status()
+            response = client.chat.completions.create(
+                model=selected_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=temperature,
+            )
 
-            text = response.json().get("response", "").strip()
+            text = ""
 
-            if not text:
-                logger.warning("call_llm | empty response (attempt %d/%d)", attempt, max_retries)
-                time.sleep(_SLEEP_EMPTY)
-                continue
+            if response.choices:
+                text = (response.choices[0].message.content or "").strip()
 
-            logger.debug("call_llm | received %d chars", len(text))
-            return text
+            if text:
+                logger.debug("call_llm | received %d chars", len(text))
+                return text
 
-        except requests.exceptions.ConnectionError:
-            logger.error("call_llm | cannot connect to Ollama at %s", OLLAMA_BASE_URL)
-            break  # No point retrying when Ollama is not running
-
-        except requests.exceptions.Timeout:
-            logger.warning("call_llm | timeout (attempt %d/%d)", attempt, max_retries)
-            time.sleep(_SLEEP_TIMEOUT)
-
-        except requests.exceptions.HTTPError as exc:
-            logger.error("call_llm | HTTP error: %s", exc)
-            break
+            logger.warning(
+                "call_llm | empty response (attempt %d/%d)",
+                attempt + 1,
+                max_retries + 1,
+            )
 
         except Exception as exc:
-            logger.error("call_llm | unexpected error: %s", exc)
-            break
+            logger.warning(
+                "call_llm | attempt %d/%d failed: %s",
+                attempt + 1,
+                max_retries + 1,
+                exc,
+            )
 
-    logger.error("call_llm | all %d attempts failed", max_retries)
+        if attempt < max_retries:
+            time.sleep(_SLEEP_BASE * (2**attempt))
+
+    logger.error("call_llm | all attempts failed")
     return ""
 
-
-# ── Async client ───────────────────────────────────────────────────────────────
 
 async def call_llm_async(
     prompt: str,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.0,
-    max_retries: int = 3,
-    timeout: float = 120.0,
+    max_retries: int = 2,
+    timeout: float = _DEFAULT_TIMEOUT,
 ) -> str:
     """
-    Async version of call_llm using httpx.
+    Async version of call_llm using AsyncGroq.
 
-    Returns an empty string on failure — never raises.
+    Returns an empty string on failure rather than raising.
     """
-    payload = _build_payload(prompt, model, temperature)
 
-    for attempt in range(1, max_retries + 1):
+    api_key = _get_api_key()
+
+    if not api_key:
+        logger.error("call_llm_async | GROQ_API_KEY is not configured")
+        return ""
+
+    selected_model = _get_model(model)
+
+    client = AsyncGroq(
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+    for attempt in range(max_retries + 1):
         try:
-            logger.debug("call_llm_async | model=%s attempt=%d temp=%.1f", model, attempt, temperature)
+            logger.debug(
+                "call_llm_async | provider=groq model=%s attempt=%d temp=%.1f",
+                selected_model,
+                attempt + 1,
+                temperature,
+            )
 
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(OLLAMA_URL, json=payload)
-                response.raise_for_status()
+            response = await client.chat.completions.create(
+                model=selected_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=temperature,
+            )
 
-                text = response.json().get("response", "").strip()
+            text = ""
 
-                if not text:
-                    logger.warning(
-                        "call_llm_async | empty response (attempt %d/%d)", attempt, max_retries
-                    )
-                    await asyncio.sleep(_SLEEP_EMPTY)
-                    continue
+            if response.choices:
+                text = (response.choices[0].message.content or "").strip()
 
-                logger.debug("call_llm_async | received %d chars", len(text))
+            if text:
+                logger.debug(
+                    "call_llm_async | received %d chars",
+                    len(text),
+                )
                 return text
 
-        except httpx.ConnectError:
-            logger.error("call_llm_async | cannot connect to Ollama at %s", OLLAMA_BASE_URL)
-            break
-
-        except httpx.ReadTimeout:
-            logger.warning("call_llm_async | timeout (attempt %d/%d)", attempt, max_retries)
-            await asyncio.sleep(_SLEEP_TIMEOUT)
-
-        except httpx.HTTPStatusError as exc:
-            logger.error("call_llm_async | HTTP error: %s", exc)
-            break
+            logger.warning(
+                "call_llm_async | empty response (attempt %d/%d)",
+                attempt + 1,
+                max_retries + 1,
+            )
 
         except Exception as exc:
-            logger.error("call_llm_async | unexpected error: %s", exc)
-            break
+            logger.warning(
+                "call_llm_async | attempt %d/%d failed: %s",
+                attempt + 1,
+                max_retries + 1,
+                exc,
+            )
 
-    logger.error("call_llm_async | all %d attempts failed", max_retries)
+        if attempt < max_retries:
+            await asyncio.sleep(_SLEEP_BASE * (2**attempt))
+
+    logger.error("call_llm_async | all attempts failed")
     return ""
 
 
-# ── Health check ───────────────────────────────────────────────────────────────
-
 def is_ollama_running() -> bool:
-    """Return True if the local Ollama server is reachable."""
-    try:
-        response = requests.get(OLLAMA_BASE_URL, timeout=5.0)
-        return response.status_code == 200
-    except (requests.exceptions.RequestException, OSError):
-        return False
+    """
+    Backwards-compatible provider health check.
 
+    The function name is intentionally unchanged because existing
+    callers use it. It now checks whether the Groq provider is configured.
+    """
 
-# ── Self-test ──────────────────────────────────────────────────────────────────
+    return bool(_get_api_key())
+
 
 if __name__ == "__main__":
-    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    print("=== Checking Groq configuration ===")
 
-    print("\n=== Checking Ollama status ===")
     if not is_ollama_running():
-        print("❌ Ollama is not running. Run: ollama serve")
-        sys.exit(1)
-    print("✅ Ollama is running\n")
-
-    print("=== Test 1: Basic factual question ===")
-    reply = call_llm("What is the capital of France? Reply in one sentence.")
-    print(f"Response: {reply}\n")
-
-    print("=== Test 2: Temperature 0.0 (deterministic) ===")
-    reply1 = call_llm("Give me a number between 1 and 10.", temperature=0.0)
-    reply2 = call_llm("Give me a number between 1 and 10.", temperature=0.0)
-    print(f"Run 1: {reply1}")
-    print(f"Run 2: {reply2}")
-    print(f"Same response (expected at temp=0.0): {reply1 == reply2}\n")
-
-    print("=== Test 3: Temperature 0.7 (varied) ===")
-    reply3 = call_llm("Give me a number between 1 and 10.", temperature=0.7)
-    reply4 = call_llm("Give me a number between 1 and 10.", temperature=0.7)
-    print(f"Run 1: {reply3}")
-    print(f"Run 2: {reply4}")
-    print(f"Different responses possible at temp=0.7: {reply3 != reply4}\n")
-
-    print("=== All tests passed ✅ ===")
+        print("GROQ_API_KEY is not configured.")
+    else:
+        print("Groq API key is configured.")
+        result = call_llm(
+            "Reply with exactly: GROQ_OK",
+            temperature=0.0,
+        )
+        print(result)
