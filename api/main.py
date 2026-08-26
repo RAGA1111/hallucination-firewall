@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 from contextlib import asynccontextmanager
@@ -186,24 +187,22 @@ def root():
 
 @app.get("/health")
 def health():
-    """
-    Health check — use this in your demo to show the API is live.
-    """
-    from core.call_llm import is_ollama_running
-
-    ollama_up = is_ollama_running()
+    """Health check for production deployment."""
+    provider_configured = bool(os.getenv("GROQ_API_KEY"))
     pipeline_ready = pipeline is not None and pipeline.kb_loaded
 
-    # Ollama is optional — decomposer and selfcheck have Python fallbacks
     status = "healthy" if pipeline_ready else "initializing"
-    mode = "full" if ollama_up else "nli-only (Ollama offline)"
 
     return {
         "status": status,
-        "mode": mode,
-        "ollama": "running" if ollama_up else "not running (Python fallback active)",
+        "version": os.getenv("BUILD_VERSION", "dev"),
+        "provider": "groq" if provider_configured else "not configured",
         "pipeline": "ready" if pipeline_ready else "not initialized",
-        "kb_passages": len(pipeline.kb.passages) if pipeline_ready and pipeline is not None else 0,
+        "kb_passages": (
+            len(pipeline.kb.passages)
+            if pipeline_ready and pipeline is not None
+            else 0
+        ),
         "startup_time_seconds": startup_time,
     }
 
