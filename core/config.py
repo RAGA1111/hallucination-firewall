@@ -49,7 +49,7 @@ class PipelineConfig:
     wiki_min_similarity: float = 0.72
     kb_retrieve_min_score: float = 0.30
     use_sentence_chunks: bool = True
-    dynamic_wikipedia: bool = True
+    dynamic_wikipedia: bool = False
     wiki_max_pages_per_run: int = 5
     wiki_max_queries: int = 8
     selfcheck_concurrency: int = 4
@@ -62,7 +62,7 @@ class PipelineConfig:
     active_kb_max_pages: int = 2
     active_kb_min_retrieval: float = 0.15
     selfcheck_samples: int = 3
-    verify_claim_timeout_seconds: float = 120.0
+    verify_claim_timeout_seconds: float = 60.0
 
     def cache_fingerprint(self) -> tuple:
         """Stable tuple for cache keys when config affects verification."""
